@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.22.2
+          cache: npm
+      - run: corepack enable
+      - run: corepack npm ci
+      - run: corepack npm run types:check
+      - run: corepack npm run lint
+      - run: corepack npm run test
+      - run: corepack npm run build
+      - run: corepack npm run deploy:dry

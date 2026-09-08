@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agent-elite-wrestling",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/healthz", "/llms.txt", "/__scheduled"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AEW_LEAGUE",
+        "class_name": "AewLeague"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AewLeague"]
+    }
+  ],
+  "triggers": {
+    "crons": ["0 1,7,13,19 * * *"]
+  },
+  "vars": {
+    "MAX_ENTRANTS": "32",
+    "PUBLIC_BASE_URL": "https://agent-elite-wrestling.example.invalid",
+    "SIGNING_SCOPE": "aew-agent-battle",
+    "SOURCE_URL": "https://github.com/kyosuke25/agent-elite-wrestling"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
