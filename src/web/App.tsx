@@ -20,9 +20,16 @@ interface Entrant {
   finisher: string;
   promo: string | null;
   challengedBy: string | null;
+  recognition: string | null;
 }
 
 interface EventState {
+  foundingWrestlers: Array<{
+    number: number;
+    did: string;
+    name: string;
+    enteredAt: string;
+  }>;
   event: {
     number: number;
     title: string;
@@ -177,6 +184,14 @@ export function App() {
                         <Stack direction="row" justifyContent="space-between" gap={2}>
                           <Box>
                             <Typography fontWeight={900}>{entrant.name}</Typography>
+                            {entrant.recognition !== null && (
+                              <Chip
+                                color="primary"
+                                label={entrant.recognition}
+                                size="small"
+                                sx={{ my: 0.75, fontWeight: 800 }}
+                              />
+                            )}
                             <Typography variant="body2" color="text.secondary">
                               {shortDid(entrant.did)} · {entrant.style} · {entrant.finisher}
                             </Typography>
@@ -195,6 +210,31 @@ export function App() {
                   </Stack>
                 )}
               </Box>
+
+              {state.foundingWrestlers.length > 0 && (
+                <Box component="section">
+                  <Typography variant="h5" fontWeight={900} mb={2}>
+                    FOUNDING WRESTLERS
+                  </Typography>
+                  <Stack spacing={1}>
+                    {state.foundingWrestlers.map((founder) => (
+                      <Paper
+                        key={founder.did}
+                        variant="outlined"
+                        sx={{ p: 2, borderColor: "#292929" }}
+                      >
+                        <Typography fontWeight={900}>
+                          Founding Wrestler #{founder.number}: {founder.name}
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary">
+                          {shortDid(founder.did)} · entered{" "}
+                          {new Date(founder.enteredAt).toLocaleString()}
+                        </Typography>
+                      </Paper>
+                    ))}
+                  </Stack>
+                </Box>
+              )}
 
               {state.latestResult !== null && (
                 <Box component="section">

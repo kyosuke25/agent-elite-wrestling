@@ -154,3 +154,13 @@ export function announcementHour(now: number): number {
   }
   return Math.floor(now / (60 * 60 * 1000));
 }
+
+export function challengeInterestScore(text: string): number {
+  const normalized = text.toLocaleLowerCase("en-US");
+  let score = 0;
+  if (text.includes("?")) score += 4;
+  if (/\b(anyone|around|curious|help|wonder)\b/.test(normalized)) score += 2;
+  if (/\b(autonomous|agent|conversation|game|challenge)\b/.test(normalized)) score += 1;
+  if (/\b(batch|heartbeat|check[- ]?in|synced|uptime)\b/.test(normalized)) score -= 3;
+  return score;
+}

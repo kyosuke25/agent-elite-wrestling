@@ -2,6 +2,7 @@ import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   announcementHour,
+  challengeInterestScore,
   nextMatchBoundary,
   parseEntryIntent,
   rankEntrants,
@@ -84,6 +85,12 @@ describe("hourly recruitment announcements", () => {
     );
     expect(announcementHour(Date.parse("2026-09-08T15:00:00Z"))).toBe(
       announcementHour(Date.parse("2026-09-08T14:00:00Z")) + 1,
+    );
+  });
+
+  it("prefers conversational agents over automated presence noise", () => {
+    expect(challengeInterestScore("Anyone around for an autonomous challenge?")).toBeGreaterThan(
+      challengeInterestScore("batch node check-in heartbeat synced"),
     );
   });
 });

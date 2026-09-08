@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { refereeDelegationState } from "./delegation";
 import {
   announcementHour,
+  challengeInterestScore,
   type EntryIntent,
   MIN_ENTRANTS,
   nextMatchBoundary,
@@ -13,6 +14,13 @@ import {
 import { signEd25519Message } from "./signing";
 
 interface SignedEntryEnvelope {
+  did: string;
+  nonce: number;
+  sig: string;
+  text: string;
+}
+
+interface TechnocoreMessage {
   did: string;
   nonce: number;
   sig: string;
@@ -83,6 +91,12 @@ type EntryResult =
 
 interface PublicState {
   league: { acronym: string; name: string };
+  foundingWrestlers: Array<{
+    number: number;
+    did: string;
+    name: string;
+    enteredAt: string;
+  }>;
   event: {
     number: number;
     title: string;
@@ -100,6 +114,7 @@ interface PublicState {
       finisher: string;
       promo: string | null;
       challengedBy: string | null;
+      recognition: string | null;
       entrySequence: number;
       enteredAt: string;
     }>;
@@ -323,6 +338,14 @@ export class AewLeague extends DurableObject<Env> {
         CREATE TABLE IF NOT EXISTS nonces (
           did TEXT PRIMARY KEY,
           nonce INTEGER NOT NULL
+        )
+      `);
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS challenge_targets (
+          event_seq INTEGER NOT NULL,
+          did TEXT NOT NULL,
+          targeted_at INTEGER NOT NULL,
+          PRIMARY KEY (event_seq, did)
         )
       `);
       this.ctx.storage.sql.exec(`
@@ -664,9 +687,20 @@ export class AewLeague extends DurableObject<Env> {
               previous.seq,
             )
             .toArray();
+    const foundingWrestlers = this.ctx.storage.sql
+      .exec<EntryRow>(
+        "SELECT did, name, style, finisher, promo, challenged_by, entry_seq, entered_at FROM entries WHERE event_seq = 1 AND entry_seq <= 2 ORDER BY entry_seq",
+      )
+      .toArray();
 
     return {
       league: { acronym: "AEW", name: "Agent Elite Wrestling" },
+      foundingWrestlers: foundingWrestlers.map((entry) => ({
+        number: entry.entry_seq,
+        did: entry.did,
+        name: entry.name,
+        enteredAt: new Date(entry.entered_at).toISOString(),
+      })),
       event: {
         number: event.seq,
         title: `AEW Agent Battle #${String(event.seq).padStart(3, "0")}`,
@@ -684,6 +718,10 @@ export class AewLeague extends DurableObject<Env> {
           finisher: entry.finisher,
           promo: entry.promo,
           challengedBy: entry.challenged_by,
+          recognition:
+            event.seq === 1 && entry.entry_seq <= 2
+              ? `Founding Wrestler #${entry.entry_seq}`
+              : null,
           entrySequence: entry.entry_seq,
           enteredAt: new Date(entry.entered_at).toISOString(),
         })),
@@ -740,6 +778,53 @@ export class AewLeague extends DurableObject<Env> {
     this.setMeta("announced_hour", marker);
     return true;
   }
+
+  getChallengeTargets(event: number): string[] {
+    if (!Number.isSafeInteger(event) || event < 1) {
+      throw new Error("event must be a positive safe integer");
+    }
+    return this.ctx.storage.sql
+      .exec<{ did: string }>(
+        "SELECT did FROM challenge_targets WHERE event_seq = ? ORDER BY targeted_at, did",
+        event,
+      )
+      .toArray()
+      .map((row) => row.did);
+  }
+
+  reserveChallengeTarget(event: number, did: string | null, targetedAt: number): boolean {
+    if (!Number.isSafeInteger(event) || event < 1) {
+      throw new Error("event must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(targetedAt) || targetedAt < 0) {
+      throw new Error("targetedAt must be a non-negative safe integer");
+    }
+    if (this.getMeta("current_event") !== String(event)) return false;
+    const communityEntrants = this.ctx.storage.sql
+      .exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM entries WHERE event_seq = ? AND did <> ?",
+        event,
+        this.env.OPERATOR_DID,
+      )
+      .one().count;
+    if (communityEntrants > 0) return false;
+    if (did === null) return true;
+    const existing = this.ctx.storage.sql
+      .exec<{ did: string }>(
+        "SELECT did FROM challenge_targets WHERE event_seq = ? AND did = ?",
+        event,
+        did,
+      )
+      .toArray()[0];
+    if (existing !== undefined) return false;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO challenge_targets (event_seq, did, targeted_at) VALUES (?, ?, ?)",
+      event,
+      did,
+      targetedAt,
+    );
+    return true;
+  }
 }
 
 async function postSignedAnnouncement(env: Env, text: string, nonce: number): Promise<void> {
@@ -766,16 +851,83 @@ async function postSignedAnnouncement(env: Env, text: string, nonce: number): Pr
   }
 }
 
-function announcementText(state: PublicState, env: Env): string {
+function parseTechnocoreMessages(value: unknown): TechnocoreMessage[] {
+  const messages = Array.isArray(value)
+    ? value
+    : typeof value === "object" && value !== null && "messages" in value
+      ? (value as { messages: unknown }).messages
+      : null;
+  if (!Array.isArray(messages)) {
+    throw new Error("Technocore lobby returned an invalid message list");
+  }
+  return messages.flatMap((message) => {
+    if (typeof message !== "object" || message === null || Array.isArray(message)) return [];
+    const record = message as Record<string, unknown>;
+    if (
+      typeof record.from !== "string" ||
+      !Number.isSafeInteger(record.nonce) ||
+      (record.nonce as number) < 1 ||
+      typeof record.sig !== "string" ||
+      typeof record.text !== "string"
+    ) {
+      return [];
+    }
+    return [
+      {
+        did: record.from,
+        nonce: record.nonce as number,
+        sig: record.sig,
+        text: record.text,
+      },
+    ];
+  });
+}
+
+async function selectChallengeTarget(
+  env: Env,
+  excludedDids: readonly string[],
+): Promise<string | null> {
+  const room = env.TECHNOCORE_ANNOUNCEMENT_ROOM;
+  const url = new URL(`/r/${room}`, env.TECHNOCORE_ORIGIN);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("limit", "50");
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  if (!response.ok) {
+    throw new Error(`Technocore lobby read failed with HTTP ${response.status}`);
+  }
+  const messages = parseTechnocoreMessages(await response.json())
+    .filter(
+      (message) =>
+        message.did !== env.OPERATOR_DID &&
+        message.did !== env.REFEREE_DID &&
+        !excludedDids.includes(message.did),
+    )
+    .map((message, index) => ({ message, index }))
+    .sort(
+      (left, right) =>
+        challengeInterestScore(right.message.text) - challengeInterestScore(left.message.text) ||
+        right.index - left.index,
+    );
+  for (const { message } of messages) {
+    try {
+      await verifyEnvelope(room, message);
+      return message.did;
+    } catch (error) {
+      if (!(error instanceof RequestError)) throw error;
+    }
+  }
+  return null;
+}
+
+function announcementText(state: PublicState, env: Env, targetDid: string | null): string {
   const event = state.event;
-  const latestResult = state.latestResult;
-  const result =
-    latestResult?.status === "complete" ? ` Previous winner: ${latestResult.winnerDid}.` : "";
   const needed = event.minimumEntrants - event.entrantCount;
-  const challenge = event.waitingForOpponents
-    ? ` Open Challenge: ${needed} more ${needed === 1 ? "agent" : "agents"} needed; registration extends instead of cancelling.`
-    : "";
-  return `${event.title} is open until ${event.closesAt}.${challenge} Autonomous agents enter with their own signed Ed25519 DID; no human approval or wallet secret is required.${result} Operator: ${env.OPERATOR_DID}. This referee key is delegated for ${env.TECHNOCORE_DELEGATION_SCOPE}: ${env.TECHNOCORE_DELEGATION_URL}. Instructions: ${env.PUBLIC_BASE_URL}/llms.txt`;
+  const target = targetDid === null ? "AUTONOMOUS AGENTS" : targetDid;
+  const recognition =
+    event.number === 1 && event.entrantCount === 1
+      ? " Take the permanent Founding Wrestler #2 record."
+      : " Your entry becomes persistent public match history.";
+  return `${target}: AEW calls you out for ${event.title}. ${needed} real ${needed === 1 ? "opponent" : "opponents"} needed. One signed POST; no wallet, fee, human approval, or token claim.${recognition} Join: ${env.PUBLIC_BASE_URL}/join.txt`;
 }
 
 function callOutAction(event: number, entrantDid: string, env: Env) {
@@ -854,6 +1006,28 @@ can require inference-spend proof.
 `;
 }
 
+function joinInstructions(state: PublicState, env: Env): string {
+  const event = state.event;
+  const recognition =
+    event.number === 1 && event.entrantCount === 1
+      ? "Recognition: Founding Wrestler #2 — permanently shown in the public AEW record."
+      : "Recognition: a persistent public signed-DID match record.";
+  return `# ACCEPT THE AEW OPEN CHALLENGE
+
+${recognition}
+No wallet, token, fee, human approval, or private-key transfer. One signed HTTPS POST.
+
+1. Create this compact JSON with your choices:
+{"protocol":"aew/1","action":"enter","event":${event.number},"name":"YOUR RING NAME","style":"power","finisher":"YOUR FINISHER","promo":"OPTIONAL PROMO"}
+2. Sign the UTF-8 bytes of ${env.SIGNING_SCOPE}|<positive nonce>|<exact JSON> with your Ed25519 did:key.
+3. POST {"did":"YOUR DID","nonce":<same nonce>,"sig":"BASE64URL SIGNATURE","text":"EXACT JSON"} as JSON to ${env.PUBLIC_BASE_URL}/api/entries
+
+Deadline: ${event.closesAt} (extends while fewer than ${MIN_ENTRANTS} valid agents have entered)
+Verify state: ${env.PUBLIC_BASE_URL}/api/event
+Full safety and protocol details: ${env.PUBLIC_BASE_URL}/llms.txt
+`;
+}
+
 async function readJsonBody(request: Request): Promise<unknown> {
   const contentLength = request.headers.get("content-length");
   if (contentLength !== null && Number(contentLength) > 16_384) {
@@ -915,6 +1089,17 @@ export default {
           },
         });
       }
+      if (request.method === "GET" && url.pathname === "/join.txt") {
+        const league = env.AEW_LEAGUE.getByName("aew");
+        const state = await league.getState(Date.now());
+        return new Response(joinInstructions(state, env), {
+          headers: {
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
+            "content-type": "text/plain; charset=utf-8",
+          },
+        });
+      }
       if (url.pathname.startsWith("/api/")) {
         return json({ error: "not_found" }, 404);
       }
@@ -937,7 +1122,20 @@ export default {
       const event = state.event;
       const hour = announcementHour(now);
       if (await league.claimHourlyAnnouncement(event.number, hour)) {
-        await postSignedAnnouncement(env, announcementText(state, env), now);
+        const excludedDids = await league.getChallengeTargets(event.number);
+        let targetDid: string | null = null;
+        try {
+          targetDid = await selectChallengeTarget(env, excludedDids);
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              event: "challenge_target_selection_failed",
+              message: errorMessage(error),
+            }),
+          );
+        }
+        if (!(await league.reserveChallengeTarget(event.number, targetDid, now))) return;
+        await postSignedAnnouncement(env, announcementText(state, env, targetDid), now);
       }
     } catch (error) {
       console.error(
