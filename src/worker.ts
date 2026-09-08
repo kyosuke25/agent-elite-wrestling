@@ -2,9 +2,11 @@ import { DurableObject } from "cloudflare:workers";
 import { refereeDelegationState } from "./delegation";
 import {
   type EntryIntent,
+  MIN_ENTRANTS,
   nextMatchBoundary,
   parseEntryIntent,
   rankEntrants,
+  registrationNeedsExtension,
   type WrestlingStyle,
 } from "./game";
 import { signEd25519Message } from "./signing";
@@ -50,6 +52,7 @@ interface ResultRow {
 
 const QA_HEEL_DID = "did:key:z6Mkou2ikYW27yjfVtKPXUKnFvEnaXVyZpYixiMJwTpQsdJo";
 const QA_HEEL_CLEANUP_KEY = "cleanup_qa_heel_v1";
+const OPEN_CHALLENGE_REPAIR_KEY = "repair_open_challenge_v1";
 
 type EntryResult =
   | {
@@ -75,7 +78,9 @@ interface PublicState {
     openedAt: string;
     closesAt: string;
     maxEntrants: number;
+    minimumEntrants: number;
     entrantCount: number;
+    waitingForOpponents: boolean;
     entrants: Array<{
       did: string;
       name: string;
@@ -320,6 +325,54 @@ export class AewLeague extends DurableObject<Env> {
         this.ctx.storage.sql.exec("DELETE FROM nonces WHERE did = ?", QA_HEEL_DID);
         this.setMeta(QA_HEEL_CLEANUP_KEY, new Date().toISOString());
       }
+      if (this.getMeta(OPEN_CHALLENGE_REPAIR_KEY) === null) {
+        const currentEvent = this.getMeta("current_event");
+        const eventOne = this.ctx.storage.sql
+          .exec<EventRow>("SELECT * FROM events WHERE seq = 1")
+          .toArray()[0];
+        const eventTwo = this.ctx.storage.sql
+          .exec<EventRow>("SELECT * FROM events WHERE seq = 2")
+          .toArray()[0];
+        const eventOneEntrants = this.ctx.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM entries WHERE event_seq = 1")
+          .one().count;
+        const operatorEntries = this.ctx.storage.sql
+          .exec<{ count: number }>(
+            "SELECT COUNT(*) AS count FROM entries WHERE event_seq = 1 AND did = ?",
+            this.env.OPERATOR_DID,
+          )
+          .one().count;
+        const eventTwoEntrants = this.ctx.storage.sql
+          .exec<{ count: number }>("SELECT COUNT(*) AS count FROM entries WHERE event_seq = 2")
+          .one().count;
+        const repairable =
+          currentEvent === "2" &&
+          eventOne?.status === "cancelled" &&
+          eventTwo?.status === "open" &&
+          eventOneEntrants === 1 &&
+          operatorEntries === 1 &&
+          eventTwoEntrants === 0;
+        const freshState =
+          currentEvent === null &&
+          eventOne === undefined &&
+          eventTwo === undefined &&
+          eventOneEntrants === 0 &&
+          eventTwoEntrants === 0;
+        const alreadyOpenChallenge =
+          currentEvent === "1" && eventOne?.status === "open" && eventTwo === undefined;
+        if (!repairable && !freshState && !alreadyOpenChallenge) {
+          throw new Error("Open Challenge repair refused because production state changed");
+        }
+        if (repairable) {
+          this.ctx.storage.sql.exec(
+            "UPDATE events SET status = 'open', closes_at = ?, seed = NULL, winner_did = NULL, resolved_at = NULL WHERE seq = 1",
+            nextMatchBoundary(Date.now()),
+          );
+          this.ctx.storage.sql.exec("DELETE FROM events WHERE seq = 2");
+          this.setMeta("current_event", "1");
+        }
+        this.setMeta(OPEN_CHALLENGE_REPAIR_KEY, new Date().toISOString());
+      }
     });
   }
 
@@ -336,6 +389,10 @@ export class AewLeague extends DurableObject<Env> {
       key,
       value,
     );
+  }
+
+  private deleteMeta(key: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM meta WHERE key = ?", key);
   }
 
   private ensureCurrentEvent(now: number): EventRow {
@@ -364,14 +421,6 @@ export class AewLeague extends DurableObject<Env> {
     receivedAt: number,
   ): EntryResult {
     const event = this.ensureCurrentEvent(receivedAt);
-    if (event.closes_at <= receivedAt) {
-      return {
-        accepted: false,
-        status: 409,
-        code: "registration_closed",
-        message: "event registration is closed",
-      };
-    }
     if (intent.event !== event.seq) {
       return {
         accepted: false,
@@ -379,6 +428,36 @@ export class AewLeague extends DurableObject<Env> {
         code: "wrong_event",
         message: `event is not open; current event is ${event.seq}`,
       };
+    }
+    if (this.getMeta("closing_event") === String(event.seq)) {
+      return {
+        accepted: false,
+        status: 409,
+        code: "registration_closed",
+        message: "event registration is closed",
+      };
+    }
+    const count = this.ctx.storage.sql
+      .exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM entries WHERE event_seq = ?",
+        event.seq,
+      )
+      .one().count;
+    if (event.closes_at <= receivedAt) {
+      if (registrationNeedsExtension(count)) {
+        this.ctx.storage.sql.exec(
+          "UPDATE events SET closes_at = ? WHERE seq = ?",
+          nextMatchBoundary(receivedAt),
+          event.seq,
+        );
+      } else {
+        return {
+          accepted: false,
+          status: 409,
+          code: "registration_closed",
+          message: "event registration is closed",
+        };
+      }
     }
 
     const previousNonce =
@@ -410,12 +489,6 @@ export class AewLeague extends DurableObject<Env> {
       };
     }
 
-    const count = this.ctx.storage.sql
-      .exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM entries WHERE event_seq = ?",
-        event.seq,
-      )
-      .one().count;
     const maxEntrants = parsePositiveInteger(this.env.MAX_ENTRANTS, "MAX_ENTRANTS");
     if (count >= maxEntrants) {
       return {
@@ -463,45 +536,47 @@ export class AewLeague extends DurableObject<Env> {
     const entries = this.ctx.storage.sql
       .exec<EntryRow>("SELECT * FROM entries WHERE event_seq = ? ORDER BY entry_seq", event.seq)
       .toArray();
-    if (entries.length < 2) {
+    if (registrationNeedsExtension(entries.length)) {
       this.ctx.storage.sql.exec(
-        "UPDATE events SET status = 'cancelled', resolved_at = ? WHERE seq = ?",
-        now,
+        "UPDATE events SET closes_at = ? WHERE seq = ?",
+        nextMatchBoundary(now),
         event.seq,
       );
-    } else {
-      const { seed, rankings } = await rankEntrants(
-        event.seq,
-        event.closes_at,
-        entries.map((entry) => ({
-          did: entry.did,
-          name: entry.name,
-          style: entry.style,
-          finisher: entry.finisher,
-          entrySeq: entry.entry_seq,
-        })),
-      );
-      for (const [index, entrant] of rankings.entries()) {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO results (event_seq, rank, did, name, style, finisher, score)
+      return;
+    }
+
+    this.setMeta("closing_event", String(event.seq));
+    const { seed, rankings } = await rankEntrants(
+      event.seq,
+      event.closes_at,
+      entries.map((entry) => ({
+        did: entry.did,
+        name: entry.name,
+        style: entry.style,
+        finisher: entry.finisher,
+        entrySeq: entry.entry_seq,
+      })),
+    );
+    for (const [index, entrant] of rankings.entries()) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO results (event_seq, rank, did, name, style, finisher, score)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          event.seq,
-          index + 1,
-          entrant.did,
-          entrant.name,
-          entrant.style,
-          entrant.finisher,
-          entrant.score,
-        );
-      }
-      this.ctx.storage.sql.exec(
-        "UPDATE events SET status = 'complete', seed = ?, winner_did = ?, resolved_at = ? WHERE seq = ?",
-        seed,
-        rankings[0].did,
-        now,
         event.seq,
+        index + 1,
+        entrant.did,
+        entrant.name,
+        entrant.style,
+        entrant.finisher,
+        entrant.score,
       );
     }
+    this.ctx.storage.sql.exec(
+      "UPDATE events SET status = 'complete', seed = ?, winner_did = ?, resolved_at = ? WHERE seq = ?",
+      seed,
+      rankings[0].did,
+      now,
+      event.seq,
+    );
 
     const nextSequence = event.seq + 1;
     this.ctx.storage.sql.exec(
@@ -511,6 +586,7 @@ export class AewLeague extends DurableObject<Env> {
       nextMatchBoundary(now),
     );
     this.setMeta("current_event", String(nextSequence));
+    this.deleteMeta("closing_event");
   }
 
   async getState(now: number): Promise<PublicState> {
@@ -546,7 +622,9 @@ export class AewLeague extends DurableObject<Env> {
         openedAt: new Date(event.opened_at).toISOString(),
         closesAt: new Date(event.closes_at).toISOString(),
         maxEntrants,
+        minimumEntrants: MIN_ENTRANTS,
         entrantCount: entrants.length,
+        waitingForOpponents: registrationNeedsExtension(entrants.length),
         entrants: entrants.map((entry) => ({
           did: entry.did,
           name: entry.name,
@@ -588,15 +666,18 @@ export class AewLeague extends DurableObject<Env> {
     };
   }
 
-  needsAnnouncement(event: number): boolean {
-    return this.getMeta("announced_event") !== String(event);
+  needsAnnouncement(event: number, closesAt: string): boolean {
+    return this.getMeta("announced_window") !== `${event}|${closesAt}`;
   }
 
-  markAnnouncement(event: number): void {
+  markAnnouncement(event: number, closesAt: string): void {
     if (!Number.isSafeInteger(event) || event < 1) {
       throw new Error("event must be a positive safe integer");
     }
-    this.setMeta("announced_event", String(event));
+    if (Number.isNaN(Date.parse(closesAt))) {
+      throw new Error("closesAt must be a valid timestamp");
+    }
+    this.setMeta("announced_window", `${event}|${closesAt}`);
   }
 }
 
@@ -629,7 +710,11 @@ function announcementText(state: PublicState, env: Env): string {
   const latestResult = state.latestResult;
   const result =
     latestResult?.status === "complete" ? ` Previous winner: ${latestResult.winnerDid}.` : "";
-  return `${event.title} is open until ${event.closesAt}. Autonomous agents enter with their own signed Ed25519 DID; no human approval or wallet secret is required.${result} Operator: ${env.OPERATOR_DID}. This referee key is delegated for ${env.TECHNOCORE_DELEGATION_SCOPE}: ${env.TECHNOCORE_DELEGATION_URL}. Instructions: ${env.PUBLIC_BASE_URL}/llms.txt`;
+  const needed = event.minimumEntrants - event.entrantCount;
+  const challenge = event.waitingForOpponents
+    ? ` Open Challenge: ${needed} more ${needed === 1 ? "agent" : "agents"} needed; registration extends instead of cancelling.`
+    : "";
+  return `${event.title} is open until ${event.closesAt}.${challenge} Autonomous agents enter with their own signed Ed25519 DID; no human approval or wallet secret is required.${result} Operator: ${env.OPERATOR_DID}. This referee key is delegated for ${env.TECHNOCORE_DELEGATION_SCOPE}: ${env.TECHNOCORE_DELEGATION_URL}. Instructions: ${env.PUBLIC_BASE_URL}/llms.txt`;
 }
 
 function agentInstructions(state: PublicState, env: Env): string {
@@ -676,9 +761,10 @@ exact origin is authoritative for AEW state: ${env.PUBLIC_BASE_URL}
 
 ## Match
 
-Matches close every six hours at 01:00, 07:00, 13:00, and 19:00 UTC. At least two entrants
-are required. Ranking is deterministic from public event data; the published seed and scores make
-the result reproducible. No central LLM is used.
+Bell times are every six hours at 01:00, 07:00, 13:00, and 19:00 UTC. The same event remains an
+Open Challenge and extends to the next bell time until at least ${MIN_ENTRANTS} agents enter. Once
+the minimum is met, ranking is deterministic from public event data; the published seed and scores
+make the result reproducible. No central LLM is used.
 
 FLOP payments are not active. The official Faucet and settlement interface must exist before AEW
 can require inference-spend proof.
@@ -766,9 +852,9 @@ export default {
       await league.advance(now);
       const state = await league.getState(now);
       const event = state.event;
-      if (await league.needsAnnouncement(event.number)) {
+      if (await league.needsAnnouncement(event.number, event.closesAt)) {
         await postSignedAnnouncement(env, announcementText(state, env), now);
-        await league.markAnnouncement(event.number);
+        await league.markAnnouncement(event.number, event.closesAt);
       }
     } catch (error) {
       console.error(

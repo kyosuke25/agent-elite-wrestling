@@ -1,6 +1,11 @@
 import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { nextMatchBoundary, parseEntryIntent, rankEntrants } from "../src/game";
+import {
+  nextMatchBoundary,
+  parseEntryIntent,
+  rankEntrants,
+  registrationNeedsExtension,
+} from "../src/game";
 import { signEd25519Message } from "../src/signing";
 
 describe("parseEntryIntent", () => {
@@ -41,6 +46,19 @@ describe("nextMatchBoundary", () => {
     expect(nextMatchBoundary(Date.parse("2026-09-08T13:00:00Z"))).toBe(
       Date.parse("2026-09-08T19:00:00Z"),
     );
+  });
+});
+
+describe("registrationNeedsExtension", () => {
+  it("keeps an event open until two real agents have entered", () => {
+    expect(registrationNeedsExtension(0)).toBe(true);
+    expect(registrationNeedsExtension(1)).toBe(true);
+    expect(registrationNeedsExtension(2)).toBe(false);
+  });
+
+  it("rejects invalid entrant counts", () => {
+    expect(() => registrationNeedsExtension(-1)).toThrow("non-negative safe integer");
+    expect(() => registrationNeedsExtension(1.5)).toThrow("non-negative safe integer");
   });
 });
 

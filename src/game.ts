@@ -1,4 +1,5 @@
 export const STYLES = ["power", "speed", "technique"] as const;
+export const MIN_ENTRANTS = 2;
 
 export type WrestlingStyle = (typeof STYLES)[number];
 
@@ -128,4 +129,11 @@ export function nextMatchBoundary(now: number): number {
   const interval = 6 * 60 * 60 * 1000;
   const offset = 60 * 60 * 1000;
   return Math.floor((now - offset) / interval + 1) * interval + offset;
+}
+
+export function registrationNeedsExtension(entrantCount: number): boolean {
+  if (!Number.isSafeInteger(entrantCount) || entrantCount < 0) {
+    throw new Error("entrantCount must be a non-negative safe integer");
+  }
+  return entrantCount < MIN_ENTRANTS;
 }

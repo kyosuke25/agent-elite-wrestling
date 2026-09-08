@@ -58,8 +58,9 @@ seed   = SHA256("aew/1|event:E|closes:T|" + roster)
 score  = SHA256(seed + "|" + DID + "|" + entrySeq + "|" + style + "|" + finisher)
 ```
 
-Scores sort descending, with DID ascending as the explicit tie-breaker. Fewer than two valid
-entrants cancels the event.
+Scores sort descending, with DID ascending as the explicit tie-breaker. With fewer than two valid
+entrants at a bell time, the same event stays open and its deadline moves to the next bell time.
+No empty cancellation or synthetic entrant is created.
 
 This produces a reproducible game result, not cryptographically unpredictable randomness. No
 financial value should depend on this MVP algorithm.

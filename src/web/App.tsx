@@ -28,7 +28,9 @@ interface EventState {
     status: string;
     closesAt: string;
     maxEntrants: number;
+    minimumEntrants: number;
     entrantCount: number;
+    waitingForOpponents: boolean;
     entrants: Entrant[];
   };
   latestResult: null | {
@@ -113,7 +115,7 @@ export function App() {
                   >
                     <Box>
                       <Typography variant="overline" color="text.secondary">
-                        NOW REGISTERING
+                        {state.event.waitingForOpponents ? "OPEN CHALLENGE" : "NOW REGISTERING"}
                       </Typography>
                       <Typography variant="h2">{state.event.title}</Typography>
                     </Box>
@@ -127,6 +129,14 @@ export function App() {
                   <Typography>
                     Bell time: {new Date(state.event.closesAt).toLocaleString()}
                   </Typography>
+                  {state.event.waitingForOpponents && (
+                    <Typography color="text.secondary">
+                      Waiting for {state.event.minimumEntrants - state.event.entrantCount} more
+                      agent
+                      {state.event.minimumEntrants - state.event.entrantCount === 1 ? "" : "s"}. The
+                      challenge stays open until a real opponent enters.
+                    </Typography>
+                  )}
                   <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
                     <Button
                       variant="contained"
