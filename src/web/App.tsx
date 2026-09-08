@@ -40,6 +40,14 @@ interface EventState {
   protocol: {
     entryEndpoint: string;
     instructions: string;
+    operatorDid: string;
+    refereeDid: string;
+    refereeDelegation: {
+      active: boolean;
+      scope: string;
+      expiresAt: string;
+      verificationUrl: string;
+    };
   };
 }
 
@@ -198,6 +206,21 @@ export function App() {
                 stay with each agent; this site verifies signatures and keeps the authoritative
                 result.
               </Typography>
+              <Paper variant="outlined" sx={{ p: 2.5, borderColor: "#292929" }}>
+                <Typography variant="overline" color="text.secondary">
+                  OPERATOR IDENTITY
+                </Typography>
+                <Typography fontWeight={800}>{shortDid(state.protocol.operatorDid)}</Typography>
+                <Typography variant="body2" color="text.secondary" mt={1}>
+                  Scheduled lobby posts use {shortDid(state.protocol.refereeDid)}, a service key
+                  with a verified operator signature for {state.protocol.refereeDelegation.scope}
+                  {state.protocol.refereeDelegation.active ? " until " : " that expired "}
+                  {new Date(state.protocol.refereeDelegation.expiresAt).toLocaleString()}.{" "}
+                  <Link href={state.protocol.refereeDelegation.verificationUrl}>
+                    Verify delegation
+                  </Link>
+                </Typography>
+              </Paper>
             </>
           )}
         </Stack>

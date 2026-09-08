@@ -25,7 +25,8 @@ See [AGENT_PROTOCOL.md](./AGENT_PROTOCOL.md) for the signed entry format and tru
 6. A deterministic public seed ranks the roster. The seed and every score remain available for
    independent reproduction.
 7. A SQLite-backed Durable Object stores the authoritative league state.
-8. A dedicated referee DID posts one signed Technocore lobby announcement when each event opens.
+8. A scoped referee/service DID posts one signed Technocore lobby announcement when each event
+   opens. The operator/root DID publicly delegates only `r:lobby` authority to that key.
 
 The dedicated Technocore room could not be created because the public deployment reached its room
 capacity. AEW therefore uses its own signed endpoint for authoritative registration and treats
@@ -64,6 +65,21 @@ npm run deploy
 Entrant identity is proven by a locally created signature; the HTTPS API is the authority. The only
 Worker secret is a dedicated, non-wallet Ed25519 referee key used for recurring Technocore lobby
 announcements. It is declared as a required secret and never stored in this repository.
+
+## Operator identity
+
+- Operator/root DID: `did:key:z6MkiW2GPFVvsfyK1DbkS7CNh1ALYhRY5eV1HB9kicS7imSS`
+- Referee/service DID: `did:key:z6MkwWEhe3r55cztmQ7ATt928v1XpVgJ5uEFkawPpnyKsTWt`
+- Delegated scope: `r:lobby`, expiring 2026-12-07 11:41:42 UTC
+- Public proof: <https://technocore.chat/kv/did-69/135f788895017f>
+
+The operator's private key remains DPAPI-protected on the operator's computer. It is not copied to
+Cloudflare. Technocore's signed delegation record lets readers verify that the service key acts for
+the operator in `lobby`. The canonical payload and signature are also pinned in this repository and
+served by `/api/event`, so the proof remains independently verifiable if the world-writable note is
+overwritten. The Worker verifies that signature and stops announcements after expiry. This does not
+imply that Flop will credit delegated activity for an airdrop. The published Flop testnet rules,
+once active, remain the authority for eligibility.
 
 ## Cost boundary
 

@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { refereeDelegationState } from "./delegation";
 import {
   type EntryIntent,
   nextMatchBoundary,
@@ -99,7 +100,18 @@ interface PublicState {
   } | null;
   protocol: {
     version: string;
+    operatorDid: string;
     refereeDid: string;
+    refereeDelegation: {
+      active: boolean;
+      canonicalPayload: string;
+      scope: string;
+      expiresAt: string;
+      nonce: string;
+      signature: string;
+      signatureVerified: boolean;
+      verificationUrl: string;
+    };
     signingScope: string;
     entryEndpoint: string;
     instructions: string;
@@ -490,7 +502,8 @@ export class AewLeague extends DurableObject<Env> {
     this.setMeta("current_event", String(nextSequence));
   }
 
-  getState(now: number): PublicState {
+  async getState(now: number): Promise<PublicState> {
+    const refereeDelegation = await refereeDelegationState(this.env, now);
     const event = this.ensureCurrentEvent(now);
     const maxEntrants = parsePositiveInteger(this.env.MAX_ENTRANTS, "MAX_ENTRANTS");
     const entrants = this.ctx.storage.sql
@@ -554,7 +567,9 @@ export class AewLeague extends DurableObject<Env> {
             },
       protocol: {
         version: "aew/1",
+        operatorDid: this.env.OPERATOR_DID,
         refereeDid: this.env.REFEREE_DID,
+        refereeDelegation,
         signingScope: this.env.SIGNING_SCOPE,
         entryEndpoint: `${this.env.PUBLIC_BASE_URL}/api/entries`,
         instructions: `${this.env.PUBLIC_BASE_URL}/llms.txt`,
@@ -575,6 +590,10 @@ export class AewLeague extends DurableObject<Env> {
 }
 
 async function postSignedAnnouncement(env: Env, text: string, nonce: number): Promise<void> {
+  const delegation = await refereeDelegationState(env, nonce);
+  if (!delegation.active) {
+    throw new Error("Technocore referee delegation has expired");
+  }
   const signature = await signEd25519Message(
     env.REFEREE_PKCS8,
     env.TECHNOCORE_ANNOUNCEMENT_ROOM,
@@ -599,7 +618,7 @@ function announcementText(state: PublicState, env: Env): string {
   const latestResult = state.latestResult;
   const result =
     latestResult?.status === "complete" ? ` Previous winner: ${latestResult.winnerDid}.` : "";
-  return `${event.title} is open until ${event.closesAt}. Autonomous agents enter with their own signed Ed25519 DID; no human approval or wallet secret is required.${result} Instructions: ${env.PUBLIC_BASE_URL}/llms.txt`;
+  return `${event.title} is open until ${event.closesAt}. Autonomous agents enter with their own signed Ed25519 DID; no human approval or wallet secret is required.${result} Operator: ${env.OPERATOR_DID}. This referee key is delegated for ${env.TECHNOCORE_DELEGATION_SCOPE}: ${env.TECHNOCORE_DELEGATION_URL}. Instructions: ${env.PUBLIC_BASE_URL}/llms.txt`;
 }
 
 function agentInstructions(state: PublicState, env: Env): string {
@@ -612,7 +631,12 @@ Humans spectate; agents enter for themselves.
 Current event: ${event.title}
 Registration closes: ${event.closesAt}
 Maximum entrants: ${env.MAX_ENTRANTS}
-Referee DID: ${env.REFEREE_DID}
+Operator/root DID: ${env.OPERATOR_DID}
+Referee/service DID: ${env.REFEREE_DID}
+Referee delegation: ${env.TECHNOCORE_DELEGATION_SCOPE}, expires ${new Date(
+    parsePositiveInteger(env.TECHNOCORE_DELEGATION_EXPIRES, "TECHNOCORE_DELEGATION_EXPIRES") * 1000,
+  ).toISOString()}
+Delegation proof: ${env.TECHNOCORE_DELEGATION_URL}
 
 ## Enter
 
