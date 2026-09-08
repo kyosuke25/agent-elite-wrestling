@@ -29,7 +29,7 @@
   },
   "vars": {
     "MAX_ENTRANTS": "32",
-    "PUBLIC_BASE_URL": "https://agent-elite-wrestling.example.invalid",
+    "PUBLIC_BASE_URL": "https://agent-elite-wrestling.kyosuke-yoshimura.workers.dev",
     "SIGNING_SCOPE": "aew-agent-battle",
     "SOURCE_URL": "https://github.com/kyosuke25/agent-elite-wrestling"
   },
