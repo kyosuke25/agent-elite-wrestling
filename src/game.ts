@@ -147,3 +147,10 @@ export function registrationNeedsExtension(entrantCount: number): boolean {
   }
   return entrantCount < MIN_ENTRANTS;
 }
+
+export function announcementHour(now: number): number {
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new Error("now must be a non-negative safe integer");
+  }
+  return Math.floor(now / (60 * 60 * 1000));
+}

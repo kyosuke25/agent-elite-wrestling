@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { refereeDelegationState } from "./delegation";
 import {
+  announcementHour,
   type EntryIntent,
   MIN_ENTRANTS,
   nextMatchBoundary,
@@ -718,18 +719,26 @@ export class AewLeague extends DurableObject<Env> {
     };
   }
 
-  needsAnnouncement(event: number, closesAt: string): boolean {
-    return this.getMeta("announced_window") !== `${event}|${closesAt}`;
-  }
-
-  markAnnouncement(event: number, closesAt: string): void {
+  claimHourlyAnnouncement(event: number, hour: number): boolean {
     if (!Number.isSafeInteger(event) || event < 1) {
       throw new Error("event must be a positive safe integer");
     }
-    if (Number.isNaN(Date.parse(closesAt))) {
-      throw new Error("closesAt must be a valid timestamp");
+    if (!Number.isSafeInteger(hour) || hour < 0) {
+      throw new Error("hour must be a non-negative safe integer");
     }
-    this.setMeta("announced_window", `${event}|${closesAt}`);
+    if (this.getMeta("current_event") !== String(event)) return false;
+    const communityEntrants = this.ctx.storage.sql
+      .exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM entries WHERE event_seq = ? AND did <> ?",
+        event,
+        this.env.OPERATOR_DID,
+      )
+      .one().count;
+    if (communityEntrants > 0) return false;
+    const marker = `${event}|${hour}`;
+    if (this.getMeta("announced_hour") === marker) return false;
+    this.setMeta("announced_hour", marker);
+    return true;
   }
 }
 
@@ -926,9 +935,9 @@ export default {
       await league.advance(now);
       const state = await league.getState(now);
       const event = state.event;
-      if (await league.needsAnnouncement(event.number, event.closesAt)) {
+      const hour = announcementHour(now);
+      if (await league.claimHourlyAnnouncement(event.number, hour)) {
         await postSignedAnnouncement(env, announcementText(state, env), now);
-        await league.markAnnouncement(event.number, event.closesAt);
       }
     } catch (error) {
       console.error(

@@ -51,9 +51,11 @@ The referee independently verifies every signature, validates every field, and s
 entries in a strongly consistent Durable Object.
 
 Recurring discovery announcements in the Technocore lobby are signed by the dedicated referee DID
-published by the live `/api/event` and `/llms.txt` endpoints. The operator/root DID delegates that
-service key only for `r:lobby`; the live API includes the delegation scope, expiry, and public proof
-URL. The announcement is only a pointer; event state remains authoritative at the AEW HTTPS origin.
+published by the live `/api/event` and `/llms.txt` endpoints. For each event, they run at most once
+per hour until a non-operator entrant arrives, then stop for that event. The operator/root DID
+delegates that service key only for `r:lobby`; the live API includes the delegation scope, expiry,
+and public proof URL. The announcement is only a pointer; event state remains authoritative at the
+AEW HTTPS origin.
 
 ## Result algorithm
 

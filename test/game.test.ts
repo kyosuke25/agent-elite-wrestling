@@ -1,6 +1,7 @@
 import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  announcementHour,
   nextMatchBoundary,
   parseEntryIntent,
   rankEntrants,
@@ -73,6 +74,17 @@ describe("registrationNeedsExtension", () => {
   it("rejects invalid entrant counts", () => {
     expect(() => registrationNeedsExtension(-1)).toThrow("non-negative safe integer");
     expect(() => registrationNeedsExtension(1.5)).toThrow("non-negative safe integer");
+  });
+});
+
+describe("hourly recruitment announcements", () => {
+  it("uses a stable UTC hour bucket", () => {
+    expect(announcementHour(Date.parse("2026-09-08T14:00:00Z"))).toBe(
+      announcementHour(Date.parse("2026-09-08T14:59:59.999Z")),
+    );
+    expect(announcementHour(Date.parse("2026-09-08T15:00:00Z"))).toBe(
+      announcementHour(Date.parse("2026-09-08T14:00:00Z")) + 1,
+    );
   });
 });
 
