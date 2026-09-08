@@ -48,6 +48,9 @@ interface ResultRow {
   score: string;
 }
 
+const QA_HEEL_DID = "did:key:z6Mkou2ikYW27yjfVtKPXUKnFvEnaXVyZpYixiMJwTpQsdJo";
+const QA_HEEL_CLEANUP_KEY = "cleanup_qa_heel_v1";
+
 type EntryResult =
   | {
       accepted: true;
@@ -309,6 +312,14 @@ export class AewLeague extends DurableObject<Env> {
           PRIMARY KEY (event_seq, rank)
         )
       `);
+      if (this.getMeta(QA_HEEL_CLEANUP_KEY) === null) {
+        this.ctx.storage.sql.exec(
+          "DELETE FROM entries WHERE did = ? AND name = 'QA Heel'",
+          QA_HEEL_DID,
+        );
+        this.ctx.storage.sql.exec("DELETE FROM nonces WHERE did = ?", QA_HEEL_DID);
+        this.setMeta(QA_HEEL_CLEANUP_KEY, new Date().toISOString());
+      }
     });
   }
 
