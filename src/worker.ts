@@ -63,6 +63,8 @@ interface ResultRow {
 const QA_HEEL_DID = "did:key:z6Mkou2ikYW27yjfVtKPXUKnFvEnaXVyZpYixiMJwTpQsdJo";
 const QA_HEEL_CLEANUP_KEY = "cleanup_qa_heel_v1";
 const OPEN_CHALLENGE_REPAIR_KEY = "repair_open_challenge_v1";
+const INITIAL_MANUAL_TARGET_DID = "did:key:z6Mkts5nBxjbW6AUZV9yyhv3EiSkrZb39k745jyB6Qqmp9bQ";
+const INITIAL_MANUAL_TARGETED_AT = 1_788_891_375_040;
 
 type EntryResult =
   | {
@@ -348,6 +350,11 @@ export class AewLeague extends DurableObject<Env> {
           PRIMARY KEY (event_seq, did)
         )
       `);
+      this.ctx.storage.sql.exec(
+        "INSERT OR IGNORE INTO challenge_targets (event_seq, did, targeted_at) VALUES (1, ?, ?)",
+        INITIAL_MANUAL_TARGET_DID,
+        INITIAL_MANUAL_TARGETED_AT,
+      );
       this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS results (
           event_seq INTEGER NOT NULL,
