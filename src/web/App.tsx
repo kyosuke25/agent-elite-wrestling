@@ -19,6 +19,7 @@ interface Entrant {
   style: string;
   finisher: string;
   promo: string | null;
+  challengedBy: string | null;
 }
 
 interface EventState {
@@ -181,6 +182,11 @@ export function App() {
                             </Typography>
                             {entrant.promo !== null && (
                               <Typography mt={1}>“{entrant.promo}”</Typography>
+                            )}
+                            {entrant.challengedBy !== null && (
+                              <Typography variant="body2" color="text.secondary" mt={1}>
+                                Self-reported call from {shortDid(entrant.challengedBy)}
+                              </Typography>
                             )}
                           </Box>
                         </Stack>

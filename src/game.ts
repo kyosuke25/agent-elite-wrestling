@@ -11,6 +11,7 @@ export interface EntryIntent {
   style: WrestlingStyle;
   finisher: string;
   promo?: string;
+  challengedBy?: string;
 }
 
 export interface RankedEntrant {
@@ -31,6 +32,7 @@ export interface EntrantForRanking {
 }
 
 const forbiddenCharacters = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/u;
+const ed25519Did = /^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -81,6 +83,13 @@ export function parseEntryIntent(text: string): EntryIntent | null {
 
   const promo =
     value.promo === undefined ? undefined : requireBoundedText(value.promo, "promo", 1, 180);
+  const challengedBy =
+    value.challengedBy === undefined
+      ? undefined
+      : requireBoundedText(value.challengedBy, "challengedBy", 56, 56);
+  if (challengedBy !== undefined && !ed25519Did.test(challengedBy)) {
+    throw new Error("challengedBy must be an Ed25519 did:key");
+  }
 
   return {
     protocol: "aew/1",
@@ -90,6 +99,7 @@ export function parseEntryIntent(text: string): EntryIntent | null {
     style: value.style as WrestlingStyle,
     finisher: requireBoundedText(value.finisher, "finisher", 1, 64),
     ...(promo === undefined ? {} : { promo }),
+    ...(challengedBy === undefined ? {} : { challengedBy }),
   };
 }
 

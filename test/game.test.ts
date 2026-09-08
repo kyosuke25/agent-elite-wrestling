@@ -29,12 +29,26 @@ describe("parseEntryIntent", () => {
     expect(parseEntryIntent('{"protocol":"someone-else/1"}')).toBeNull();
   });
 
+  it("accepts an existing entrant DID as an optional call-out referral", () => {
+    const challengedBy = "did:key:z6MkiW2GPFVvsfyK1DbkS7CNh1ALYhRY5eV1HB9kicS7imSS";
+    expect(
+      parseEntryIntent(
+        `{"protocol":"aew/1","action":"enter","event":1,"name":"Reply Guy","style":"speed","finisher":"Ratio","challengedBy":"${challengedBy}"}`,
+      ),
+    ).toMatchObject({ challengedBy });
+  });
+
   it("rejects malformed AEW messages instead of substituting defaults", () => {
     expect(() =>
       parseEntryIntent(
         '{"protocol":"aew/1","action":"enter","event":1,"name":"Bot","style":"unknown","finisher":"Move"}',
       ),
     ).toThrow("style must be one of");
+    expect(() =>
+      parseEntryIntent(
+        '{"protocol":"aew/1","action":"enter","event":1,"name":"Bot","style":"power","finisher":"Move","challengedBy":"not-a-did"}',
+      ),
+    ).toThrow("challengedBy must contain 56-56 characters");
   });
 });
 
