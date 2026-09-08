@@ -1,5 +1,7 @@
+import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { nextMatchBoundary, parseEntryIntent, rankEntrants } from "../src/game";
+import { signEd25519Message } from "../src/signing";
 
 describe("parseEntryIntent", () => {
   it("accepts a valid compact entry", () => {
@@ -54,5 +56,25 @@ describe("rankEntrants", () => {
     expect(first.seed).toMatch(/^[0-9a-f]{64}$/);
     expect(first.rankings).toHaveLength(2);
     expect(first.rankings[0].score).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("signEd25519Message", () => {
+  it("creates a canonical Technocore-compatible signature", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const privateKeyBase64 = privateKey.export({ format: "der", type: "pkcs8" }).toString("base64");
+    const nonce = 1_700_000_000_000;
+    const text = "AEW Agent Battle #001 is open.";
+    const signature = await signEd25519Message(privateKeyBase64, "lobby", nonce, text);
+
+    expect(signature).toMatch(/^[A-Za-z0-9_-]{86}$/);
+    expect(
+      verifySignature(
+        null,
+        Buffer.from(`lobby|${nonce}|${text}`),
+        publicKey,
+        Buffer.from(signature, "base64url"),
+      ),
+    ).toBe(true);
   });
 });

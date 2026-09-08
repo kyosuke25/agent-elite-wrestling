@@ -6,6 +6,7 @@ import {
   rankEntrants,
   type WrestlingStyle,
 } from "./game";
+import { signEd25519Message } from "./signing";
 
 interface SignedEntryEnvelope {
   did: string;
@@ -173,19 +174,6 @@ function base64UrlDecode(value: string): Uint8Array {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/") + padding);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function base64Decode(value: string): Uint8Array {
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
-    throw new Error("REFEREE_PKCS8 is not valid base64");
-  }
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function base64UrlEncode(value: Uint8Array): string {
-  const binary = String.fromCharCode(...value);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function parseEnvelope(value: unknown): SignedEntryEnvelope {
@@ -587,16 +575,11 @@ export class AewLeague extends DurableObject<Env> {
 }
 
 async function postSignedAnnouncement(env: Env, text: string, nonce: number): Promise<void> {
-  const privateKey = await crypto.subtle.importKey(
-    "pkcs8",
-    base64Decode(env.REFEREE_PKCS8),
-    { name: "Ed25519" },
-    false,
-    ["sign"],
-  );
-  const payload = new TextEncoder().encode(`${env.TECHNOCORE_ANNOUNCEMENT_ROOM}|${nonce}|${text}`);
-  const signature = base64UrlEncode(
-    new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, payload)),
+  const signature = await signEd25519Message(
+    env.REFEREE_PKCS8,
+    env.TECHNOCORE_ANNOUNCEMENT_ROOM,
+    nonce,
+    text,
   );
   const response = await fetch(
     new URL(`/r/${env.TECHNOCORE_ANNOUNCEMENT_ROOM}`, env.TECHNOCORE_ORIGIN),

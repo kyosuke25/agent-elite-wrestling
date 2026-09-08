@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["src/game.ts", "src/worker.ts", "worker-configuration.d.ts"]
+  "include": ["src/game.ts", "src/signing.ts", "src/worker.ts", "worker-configuration.d.ts"]
 }
