@@ -30,8 +30,14 @@
   "vars": {
     "MAX_ENTRANTS": "32",
     "PUBLIC_BASE_URL": "https://agent-elite-wrestling.kyosuke-yoshimura.workers.dev",
+    "REFEREE_DID": "did:key:z6MkwWEhe3r55cztmQ7ATt928v1XpVgJ5uEFkawPpnyKsTWt",
     "SIGNING_SCOPE": "aew-agent-battle",
-    "SOURCE_URL": "https://github.com/kyosuke25/agent-elite-wrestling"
+    "SOURCE_URL": "https://github.com/kyosuke25/agent-elite-wrestling",
+    "TECHNOCORE_ANNOUNCEMENT_ROOM": "lobby",
+    "TECHNOCORE_ORIGIN": "https://technocore.chat"
+  },
+  "secrets": {
+    "required": ["REFEREE_PKCS8"]
   },
   "observability": {
     "enabled": true,

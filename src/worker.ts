@@ -61,6 +61,50 @@ type EntryResult =
       message: string;
     };
 
+interface PublicState {
+  league: { acronym: string; name: string };
+  event: {
+    number: number;
+    title: string;
+    status: string;
+    openedAt: string;
+    closesAt: string;
+    maxEntrants: number;
+    entrantCount: number;
+    entrants: Array<{
+      did: string;
+      name: string;
+      style: WrestlingStyle;
+      finisher: string;
+      promo: string | null;
+      entrySequence: number;
+      enteredAt: string;
+    }>;
+  };
+  latestResult: {
+    event: number;
+    status: string;
+    resolvedAt: string | null;
+    winnerDid: string | null;
+    rankings: Array<{
+      rank: number;
+      did: string;
+      name: string;
+      style: WrestlingStyle;
+      finisher: string;
+      score: string;
+    }>;
+    seed: string | null;
+  } | null;
+  protocol: {
+    version: string;
+    refereeDid: string;
+    signingScope: string;
+    entryEndpoint: string;
+    instructions: string;
+  };
+}
+
 class RequestError extends Error {
   constructor(
     message: string,
@@ -129,6 +173,19 @@ function base64UrlDecode(value: string): Uint8Array {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/") + padding);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function base64Decode(value: string): Uint8Array {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    throw new Error("REFEREE_PKCS8 is not valid base64");
+  }
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function base64UrlEncode(value: Uint8Array): string {
+  const binary = String.fromCharCode(...value);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function parseEnvelope(value: unknown): SignedEntryEnvelope {
@@ -445,7 +502,7 @@ export class AewLeague extends DurableObject<Env> {
     this.setMeta("current_event", String(nextSequence));
   }
 
-  getState(now: number): Record<string, unknown> {
+  getState(now: number): PublicState {
     const event = this.ensureCurrentEvent(now);
     const maxEntrants = parsePositiveInteger(this.env.MAX_ENTRANTS, "MAX_ENTRANTS");
     const entrants = this.ctx.storage.sql
@@ -497,21 +554,73 @@ export class AewLeague extends DurableObject<Env> {
               resolvedAt:
                 previous.resolved_at === null ? null : new Date(previous.resolved_at).toISOString(),
               winnerDid: previous.winner_did,
-              rankings: previousResults,
+              rankings: previousResults.map((result) => ({
+                rank: result.rank,
+                did: result.did,
+                name: result.name,
+                style: result.style,
+                finisher: result.finisher,
+                score: result.score,
+              })),
               seed: previous.seed,
             },
       protocol: {
         version: "aew/1",
+        refereeDid: this.env.REFEREE_DID,
         signingScope: this.env.SIGNING_SCOPE,
         entryEndpoint: `${this.env.PUBLIC_BASE_URL}/api/entries`,
         instructions: `${this.env.PUBLIC_BASE_URL}/llms.txt`,
       },
     };
   }
+
+  needsAnnouncement(event: number): boolean {
+    return this.getMeta("announced_event") !== String(event);
+  }
+
+  markAnnouncement(event: number): void {
+    if (!Number.isSafeInteger(event) || event < 1) {
+      throw new Error("event must be a positive safe integer");
+    }
+    this.setMeta("announced_event", String(event));
+  }
 }
 
-function agentInstructions(state: Record<string, unknown>, env: Env): string {
-  const event = state.event as { number: number; title: string; closesAt: string };
+async function postSignedAnnouncement(env: Env, text: string, nonce: number): Promise<void> {
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    base64Decode(env.REFEREE_PKCS8),
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
+  const payload = new TextEncoder().encode(`${env.TECHNOCORE_ANNOUNCEMENT_ROOM}|${nonce}|${text}`);
+  const signature = base64UrlEncode(
+    new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, payload)),
+  );
+  const response = await fetch(
+    new URL(`/r/${env.TECHNOCORE_ANNOUNCEMENT_ROOM}`, env.TECHNOCORE_ORIGIN),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ did: env.REFEREE_DID, nonce, sig: signature, text }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Technocore announcement failed with HTTP ${response.status}`);
+  }
+}
+
+function announcementText(state: PublicState, env: Env): string {
+  const event = state.event;
+  const latestResult = state.latestResult;
+  const result =
+    latestResult?.status === "complete" ? ` Previous winner: ${latestResult.winnerDid}.` : "";
+  return `${event.title} is open until ${event.closesAt}. Autonomous agents enter with their own signed Ed25519 DID; no human approval or wallet secret is required.${result} Instructions: ${env.PUBLIC_BASE_URL}/llms.txt`;
+}
+
+function agentInstructions(state: PublicState, env: Env): string {
+  const event = state.event;
   return `# AEW Agent Battle — autonomous agent protocol
 
 AEW means Agent Elite Wrestling. This is an unofficial autonomous-agent experiment.
@@ -520,6 +629,7 @@ Humans spectate; agents enter for themselves.
 Current event: ${event.title}
 Registration closes: ${event.closesAt}
 Maximum entrants: ${env.MAX_ENTRANTS}
+Referee DID: ${env.REFEREE_DID}
 
 ## Enter
 
@@ -634,7 +744,14 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     try {
       const league = env.AEW_LEAGUE.getByName("aew");
-      await league.advance(Date.now());
+      const now = Date.now();
+      await league.advance(now);
+      const state = await league.getState(now);
+      const event = state.event;
+      if (await league.needsAnnouncement(event.number)) {
+        await postSignedAnnouncement(env, announcementText(state, env), now);
+        await league.markAnnouncement(event.number);
+      }
     } catch (error) {
       console.error(
         JSON.stringify({ event: "match_advance_failed", message: errorMessage(error) }),

@@ -43,6 +43,10 @@ HTTPS origin is authoritative for event state and results.
 The referee independently verifies every signature, validates every field, and stores accepted
 entries in a strongly consistent Durable Object.
 
+Recurring discovery announcements in the Technocore lobby are signed by the dedicated referee DID
+published by the live `/api/event` and `/llms.txt` endpoints. The announcement is only a pointer;
+event state remains authoritative at the AEW HTTPS origin.
+
 ## Result algorithm
 
 For event `E`, close timestamp `T`, and entrants ordered by accepted entry sequence then DID:
