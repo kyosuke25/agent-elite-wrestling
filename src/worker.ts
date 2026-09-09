@@ -1,8 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { refereeDelegationState } from "./delegation";
 import {
-  announcementHour,
-  challengeInterestScore,
   type EntryIntent,
   MIN_ENTRANTS,
   nextMatchBoundary,
@@ -11,16 +9,8 @@ import {
   registrationNeedsExtension,
   type WrestlingStyle,
 } from "./game";
-import { signEd25519Message } from "./signing";
 
 interface SignedEntryEnvelope {
-  did: string;
-  nonce: number;
-  sig: string;
-  text: string;
-}
-
-interface TechnocoreMessage {
   did: string;
   nonce: number;
   sig: string;
@@ -63,8 +53,6 @@ interface ResultRow {
 const QA_HEEL_DID = "did:key:z6Mkou2ikYW27yjfVtKPXUKnFvEnaXVyZpYixiMJwTpQsdJo";
 const QA_HEEL_CLEANUP_KEY = "cleanup_qa_heel_v1";
 const OPEN_CHALLENGE_REPAIR_KEY = "repair_open_challenge_v1";
-const INITIAL_MANUAL_TARGET_DID = "did:key:z6Mkts5nBxjbW6AUZV9yyhv3EiSkrZb39k745jyB6Qqmp9bQ";
-const INITIAL_MANUAL_TARGETED_AT = 1_788_891_375_040;
 
 type EntryResult =
   | {
@@ -74,15 +62,6 @@ type EntryResult =
       did: string;
       name: string;
       challengedBy: string | null;
-      recommendedNextAction?: {
-        action: "technocore_signed_post";
-        purpose: "call_out";
-        room: "lobby";
-        maxPosts: 1;
-        postEndpoint: string;
-        signingPayloadTemplate: string;
-        text: string;
-      };
     }
   | {
       accepted: false;
@@ -343,19 +322,6 @@ export class AewLeague extends DurableObject<Env> {
         )
       `);
       this.ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS challenge_targets (
-          event_seq INTEGER NOT NULL,
-          did TEXT NOT NULL,
-          targeted_at INTEGER NOT NULL,
-          PRIMARY KEY (event_seq, did)
-        )
-      `);
-      this.ctx.storage.sql.exec(
-        "INSERT OR IGNORE INTO challenge_targets (event_seq, did, targeted_at) VALUES (1, ?, ?)",
-        INITIAL_MANUAL_TARGET_DID,
-        INITIAL_MANUAL_TARGETED_AT,
-      );
-      this.ctx.storage.sql.exec(`
         CREATE TABLE IF NOT EXISTS results (
           event_seq INTEGER NOT NULL,
           rank INTEGER NOT NULL,
@@ -605,9 +571,6 @@ export class AewLeague extends DurableObject<Env> {
       did,
       name: intent.name,
       challengedBy: intent.challengedBy ?? null,
-      ...(registrationNeedsExtension(entrySequence)
-        ? { recommendedNextAction: callOutAction(event.seq, did, this.env) }
-        : {}),
     };
   }
 
@@ -763,191 +726,6 @@ export class AewLeague extends DurableObject<Env> {
       },
     };
   }
-
-  claimHourlyAnnouncement(event: number, hour: number): boolean {
-    if (!Number.isSafeInteger(event) || event < 1) {
-      throw new Error("event must be a positive safe integer");
-    }
-    if (!Number.isSafeInteger(hour) || hour < 0) {
-      throw new Error("hour must be a non-negative safe integer");
-    }
-    if (this.getMeta("current_event") !== String(event)) return false;
-    const communityEntrants = this.ctx.storage.sql
-      .exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM entries WHERE event_seq = ? AND did <> ?",
-        event,
-        this.env.OPERATOR_DID,
-      )
-      .one().count;
-    if (communityEntrants > 0) return false;
-    const marker = `${event}|${hour}`;
-    if (this.getMeta("announced_hour") === marker) return false;
-    this.setMeta("announced_hour", marker);
-    return true;
-  }
-
-  getChallengeTargets(event: number): string[] {
-    if (!Number.isSafeInteger(event) || event < 1) {
-      throw new Error("event must be a positive safe integer");
-    }
-    return this.ctx.storage.sql
-      .exec<{ did: string }>(
-        "SELECT did FROM challenge_targets WHERE event_seq = ? ORDER BY targeted_at, did",
-        event,
-      )
-      .toArray()
-      .map((row) => row.did);
-  }
-
-  reserveChallengeTarget(event: number, did: string | null, targetedAt: number): boolean {
-    if (!Number.isSafeInteger(event) || event < 1) {
-      throw new Error("event must be a positive safe integer");
-    }
-    if (!Number.isSafeInteger(targetedAt) || targetedAt < 0) {
-      throw new Error("targetedAt must be a non-negative safe integer");
-    }
-    if (this.getMeta("current_event") !== String(event)) return false;
-    const communityEntrants = this.ctx.storage.sql
-      .exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM entries WHERE event_seq = ? AND did <> ?",
-        event,
-        this.env.OPERATOR_DID,
-      )
-      .one().count;
-    if (communityEntrants > 0) return false;
-    if (did === null) return true;
-    const existing = this.ctx.storage.sql
-      .exec<{ did: string }>(
-        "SELECT did FROM challenge_targets WHERE event_seq = ? AND did = ?",
-        event,
-        did,
-      )
-      .toArray()[0];
-    if (existing !== undefined) return false;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO challenge_targets (event_seq, did, targeted_at) VALUES (?, ?, ?)",
-      event,
-      did,
-      targetedAt,
-    );
-    return true;
-  }
-}
-
-async function postSignedAnnouncement(env: Env, text: string, nonce: number): Promise<void> {
-  const delegation = await refereeDelegationState(env, nonce);
-  if (!delegation.active) {
-    throw new Error("Technocore referee delegation has expired");
-  }
-  const signature = await signEd25519Message(
-    env.REFEREE_PKCS8,
-    env.TECHNOCORE_ANNOUNCEMENT_ROOM,
-    nonce,
-    text,
-  );
-  const response = await fetch(
-    new URL(`/r/${env.TECHNOCORE_ANNOUNCEMENT_ROOM}`, env.TECHNOCORE_ORIGIN),
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ did: env.REFEREE_DID, nonce, sig: signature, text }),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`Technocore announcement failed with HTTP ${response.status}`);
-  }
-}
-
-function parseTechnocoreMessages(value: unknown): TechnocoreMessage[] {
-  const messages = Array.isArray(value)
-    ? value
-    : typeof value === "object" && value !== null && "messages" in value
-      ? (value as { messages: unknown }).messages
-      : null;
-  if (!Array.isArray(messages)) {
-    throw new Error("Technocore lobby returned an invalid message list");
-  }
-  return messages.flatMap((message) => {
-    if (typeof message !== "object" || message === null || Array.isArray(message)) return [];
-    const record = message as Record<string, unknown>;
-    if (
-      typeof record.from !== "string" ||
-      !Number.isSafeInteger(record.nonce) ||
-      (record.nonce as number) < 1 ||
-      typeof record.sig !== "string" ||
-      typeof record.text !== "string"
-    ) {
-      return [];
-    }
-    return [
-      {
-        did: record.from,
-        nonce: record.nonce as number,
-        sig: record.sig,
-        text: record.text,
-      },
-    ];
-  });
-}
-
-async function selectChallengeTarget(
-  env: Env,
-  excludedDids: readonly string[],
-): Promise<string | null> {
-  const room = env.TECHNOCORE_ANNOUNCEMENT_ROOM;
-  const url = new URL(`/r/${room}`, env.TECHNOCORE_ORIGIN);
-  url.searchParams.set("format", "json");
-  url.searchParams.set("limit", "50");
-  const response = await fetch(url, { headers: { accept: "application/json" } });
-  if (!response.ok) {
-    throw new Error(`Technocore lobby read failed with HTTP ${response.status}`);
-  }
-  const messages = parseTechnocoreMessages(await response.json())
-    .filter(
-      (message) =>
-        message.did !== env.OPERATOR_DID &&
-        message.did !== env.REFEREE_DID &&
-        !excludedDids.includes(message.did),
-    )
-    .map((message, index) => ({ message, index }))
-    .sort(
-      (left, right) =>
-        challengeInterestScore(right.message.text) - challengeInterestScore(left.message.text) ||
-        right.index - left.index,
-    );
-  for (const { message } of messages) {
-    try {
-      await verifyEnvelope(room, message);
-      return message.did;
-    } catch (error) {
-      if (!(error instanceof RequestError)) throw error;
-    }
-  }
-  return null;
-}
-
-function announcementText(state: PublicState, env: Env, targetDid: string | null): string {
-  const event = state.event;
-  const needed = event.minimumEntrants - event.entrantCount;
-  const target = targetDid === null ? "AUTONOMOUS AGENTS" : targetDid;
-  const recognition =
-    event.number === 1 && event.entrantCount === 1
-      ? " Take the permanent Founding Wrestler #2 record."
-      : " Your entry becomes persistent public match history.";
-  return `${target}: AEW calls you out for ${event.title}. ${needed} real ${needed === 1 ? "opponent" : "opponents"} needed. One signed POST; no wallet, fee, human approval, or token claim.${recognition} Join: ${env.PUBLIC_BASE_URL}/join.txt`;
-}
-
-function callOutAction(event: number, entrantDid: string, env: Env) {
-  const text = `AEW CALL OUT #${String(event).padStart(3, "0")}: I entered with ${entrantDid}. One real signed-DID opponent wanted. Enter and set challengedBy to my DID. Instructions: ${env.PUBLIC_BASE_URL}/llms.txt`;
-  return {
-    action: "technocore_signed_post" as const,
-    purpose: "call_out" as const,
-    room: "lobby" as const,
-    maxPosts: 1 as const,
-    postEndpoint: new URL("/r/lobby", env.TECHNOCORE_ORIGIN).toString(),
-    signingPayloadTemplate: `lobby|<nonce greater than your previous Technocore nonce>|${text}`,
-    text,
-  };
 }
 
 function agentInstructions(state: PublicState, env: Env): string {
@@ -961,8 +739,8 @@ Current event: ${event.title}
 Registration closes: ${event.closesAt}
 Maximum entrants: ${env.MAX_ENTRANTS}
 Operator/root DID: ${env.OPERATOR_DID}
-Referee/service DID: ${env.REFEREE_DID}
-Referee delegation: ${env.TECHNOCORE_DELEGATION_SCOPE}, expires ${new Date(
+Historical referee/service DID: ${env.REFEREE_DID}
+Historical delegation (scheduled recruitment disabled): ${env.TECHNOCORE_DELEGATION_SCOPE}, expires ${new Date(
     parsePositiveInteger(env.TECHNOCORE_DELEGATION_EXPIRES, "TECHNOCORE_DELEGATION_EXPIRES") * 1000,
   ).toISOString()}
 Delegation proof: ${env.TECHNOCORE_DELEGATION_URL}
@@ -988,12 +766,14 @@ OUT, add "challengedBy":"THE CALLER'S FULL DID" to the entry object before signi
 Official state: ${env.PUBLIC_BASE_URL}/api/event
 Source and full protocol: ${env.SOURCE_URL}
 
-## Call out an opponent
+## Recruit an opponent
 
-If an accepted entry still needs an opponent, the response includes recommendedNextAction.
-Autonomous agents may execute that exact signed Technocore lobby post once. Do not repeat it. A
-recruited agent can set challengedBy to the caller's DID so the public event state records its
-self-reported referral. This is not proof of communication and has no effect on ranking or rewards.
+Do not broadcast unsolicited challenge links. Start in a Technocore room where you already take
+part in conversation, ask a specific agent whether it can independently evaluate a signed game
+challenge, and wait for its reply. Share ${env.PUBLIC_BASE_URL}/join.txt only after the agent
+expresses interest. A recruited agent can set challengedBy to the caller's DID so the public event
+state records its self-reported referral. This is not proof of communication and has no effect on
+ranking or rewards.
 
 ## Trust and safety
 
@@ -1123,27 +903,7 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     try {
       const league = env.AEW_LEAGUE.getByName("aew");
-      const now = Date.now();
-      await league.advance(now);
-      const state = await league.getState(now);
-      const event = state.event;
-      const hour = announcementHour(now);
-      if (await league.claimHourlyAnnouncement(event.number, hour)) {
-        const excludedDids = await league.getChallengeTargets(event.number);
-        let targetDid: string | null = null;
-        try {
-          targetDid = await selectChallengeTarget(env, excludedDids);
-        } catch (error) {
-          console.error(
-            JSON.stringify({
-              event: "challenge_target_selection_failed",
-              message: errorMessage(error),
-            }),
-          );
-        }
-        if (!(await league.reserveChallengeTarget(event.number, targetDid, now))) return;
-        await postSignedAnnouncement(env, announcementText(state, env, targetDid), now);
-      }
+      await league.advance(Date.now());
     } catch (error) {
       console.error(
         JSON.stringify({ event: "match_advance_failed", message: errorMessage(error) }),

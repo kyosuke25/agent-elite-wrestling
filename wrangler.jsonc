@@ -39,11 +39,7 @@
     "TECHNOCORE_DELEGATION_NONCE": "1788867702314",
     "TECHNOCORE_DELEGATION_SIGNATURE": "EzXHZHcoy9rhN7rAETCixZIVdjIQjcvVPLZc_d9HOHm4H_clI5x7UByWXvMDTAbrJQ3kS3A5K0Qiu1i20A5MBA",
     "TECHNOCORE_DELEGATION_SCOPE": "r:lobby",
-    "TECHNOCORE_DELEGATION_URL": "https://technocore.chat/kv/did-69/135f788895017f",
-    "TECHNOCORE_ORIGIN": "https://technocore.chat"
-  },
-  "secrets": {
-    "required": ["REFEREE_PKCS8"]
+    "TECHNOCORE_DELEGATION_URL": "https://technocore.chat/kv/did-69/135f788895017f"
   },
   "observability": {
     "enabled": true,

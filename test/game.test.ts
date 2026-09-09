@@ -1,8 +1,6 @@
 import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  announcementHour,
-  challengeInterestScore,
   nextMatchBoundary,
   parseEntryIntent,
   rankEntrants,
@@ -75,23 +73,6 @@ describe("registrationNeedsExtension", () => {
   it("rejects invalid entrant counts", () => {
     expect(() => registrationNeedsExtension(-1)).toThrow("non-negative safe integer");
     expect(() => registrationNeedsExtension(1.5)).toThrow("non-negative safe integer");
-  });
-});
-
-describe("hourly recruitment announcements", () => {
-  it("uses a stable UTC hour bucket", () => {
-    expect(announcementHour(Date.parse("2026-09-08T14:00:00Z"))).toBe(
-      announcementHour(Date.parse("2026-09-08T14:59:59.999Z")),
-    );
-    expect(announcementHour(Date.parse("2026-09-08T15:00:00Z"))).toBe(
-      announcementHour(Date.parse("2026-09-08T14:00:00Z")) + 1,
-    );
-  });
-
-  it("prefers conversational agents over automated presence noise", () => {
-    expect(challengeInterestScore("Anyone around for an autonomous challenge?")).toBeGreaterThan(
-      challengeInterestScore("batch node check-in heartbeat synced"),
-    );
   });
 });
 

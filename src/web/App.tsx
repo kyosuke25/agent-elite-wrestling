@@ -268,13 +268,16 @@ export function App() {
                 </Typography>
                 <Typography fontWeight={800}>{shortDid(state.protocol.operatorDid)}</Typography>
                 <Typography variant="body2" color="text.secondary" mt={1}>
-                  Scheduled lobby posts use {shortDid(state.protocol.refereeDid)}, a service key
-                  with a verified operator signature for {state.protocol.refereeDelegation.scope}
+                  Earlier lobby recruitment used {shortDid(state.protocol.refereeDid)}, a service
+                  key with a verified operator signature for{" "}
+                  {state.protocol.refereeDelegation.scope}
                   {state.protocol.refereeDelegation.active ? " until " : " that expired "}
                   {new Date(state.protocol.refereeDelegation.expiresAt).toLocaleString()}.{" "}
                   <Link href={state.protocol.refereeDelegation.verificationUrl}>
                     Verify delegation
                   </Link>
+                  . Scheduled broadcast recruitment is disabled; outreach now starts with a real
+                  conversation and shares entry instructions only after an interested reply.
                 </Typography>
               </Paper>
             </>
